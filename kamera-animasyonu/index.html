@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Işık Kapanmadan Önce</title>
+<style>
+  @font-face { font-family: "Fraunces"; font-style: italic; font-weight: 400;
+    src: url(fonts/fraunces-latin.woff2) format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+  @font-face { font-family: "Fraunces"; font-style: italic; font-weight: 400;
+    src: url(fonts/fraunces-latin-ext.woff2) format("woff2");
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: absolute; inset: 0; margin: auto; max-width: 100vw; max-height: 100vh;
+    width: 100vw; height: calc(100vw * 9 / 16); cursor: pointer; }
+  @media (min-aspect-ratio: 16/9) { canvas { height: 100vh; width: calc(100vh * 16 / 9); } }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// Sabitler
+// ---------------------------------------------------------------------------
+const W = 1920, H = 1080, FPS = 30, DUR = 15;
+const RENDER = new URLSearchParams(location.search).has("render");
+const SUB = RENDER ? 6 : 2;          // hareket bulanıklığı için alt kare sayısı
+const SHUTTER = 0.5;                 // 180° obtüratör
+
+const canvas = document.getElementById("c");
+const out = canvas.getContext("2d");
+const img = new Image();
+img.src = "scene.jpg";
+let IW = 1376, IH = 768, COVER = 1;
+
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const smooth = (a, b, t) => { const x = clamp((t - a) / (b - a)); return x * x * (3 - 2 * x); };
+const win = (t, a, b, f = 0.4) => smooth(a - f, a + f, t) * (1 - smooth(b - f, b + f, t));
+const mkCanvas = (w, h) => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
+
+// ---------------------------------------------------------------------------
+// Yönetmen planı — kamera anahtar kareleri
+// [zaman(s), merkezX, merkezY, zoom (1 = tüm kare), roll(derece)]  (görsel pikseli)
+// ---------------------------------------------------------------------------
+const KEYS = [
+  [0.0,  688, 384, 1.06, -1.2],   // 1. Açılış: geniş plan, hafif eğik
+  [1.4,  690, 398, 1.35, -0.6],   //    karaktere doğru itiş
+  [2.9,  692, 405, 2.05,  0.0],   // 2. Karakter yakın plan
+  [3.3,  700, 410, 2.10,  0.3],   //    nefes payı
+  [4.1,  990, 560, 1.85,  1.0],   // 3. Balon 1 — yarım kalan bugün
+  [5.3, 1000, 556, 1.95,  0.6],
+  [6.2, 1040, 405, 2.15, -0.4],   //    noktalı ışığı takip ederek yukarı
+  [6.8,  950, 290, 2.05, -0.8],   // 4. Balon 2 — gelecek kaygısı
+  [8.1,  945, 288, 2.15, -0.5],
+  [8.9,  740, 215, 2.20,  0.3],   //    ışık yolu sola kıvrılıyor
+  [9.5,  490, 195, 2.05,  0.8],   // 5. Balon 3 — eski pişmanlık
+  [10.8, 485, 196, 2.18,  0.5],
+  [12.0, 660, 380, 1.60, -11.0],  // 6. Dönüşlü geri çekiliş (roll)
+  [13.3, 690, 390, 1.10,  0.0],   //    geniş plan, oda bütün
+  [15.0, 690, 396, 1.16,  0.0],   // 7. Karanlıkta yavaş itiş
+];
+
+// Fritsch–Carlson monoton kübik: aşma (overshoot) yok, hızlar sürekli
+function monotone(xs, ys) {
+  const n = xs.length, d = [], m = new Array(n);
+  for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
+  m[0] = d[0]; m[n - 1] = d[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    if (d[i - 1] * d[i] <= 0) { m[i] = 0; continue; }
+    const h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i];
+    const w1 = 2 * h1 + h0, w2 = h1 + 2 * h0;
+    m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]);
+  }
+  return x => {
+    if (x <= xs[0]) return ys[0];
+    if (x >= xs[n - 1]) return ys[n - 1];
+    let i = 0; while (x > xs[i + 1]) i++;
+    const h = xs[i + 1] - xs[i], t = (x - xs[i]) / h, t2 = t * t, t3 = t2 * t;
+    return (2*t3 - 3*t2 + 1) * ys[i] + (t3 - 2*t2 + t) * h * m[i]
+         + (-2*t3 + 3*t2) * ys[i + 1] + (t3 - t2) * h * m[i + 1];
+  };
+}
+const T = KEYS.map(k => k[0]);
+const fx = monotone(T, KEYS.map(k => k[1]));
+const fy = monotone(T, KEYS.map(k => k[2]));
+const fz = monotone(T, KEYS.map(k => Math.log(k[3])));   // zoom log uzayında: sabit hissedilen hız
+const fr = monotone(T, KEYS.map(k => k[4]));
+
+// Vuruşlar: kırmızı X nabzı ve ışık düğmesi — küçük kamera sarsıntısı
+const BEATS = [4.25, 4.6, 13.22];
+function jolt(t) {
+  let v = 0;
+  for (const b of BEATS) if (t > b) v += Math.exp(-(t - b) * 14) * Math.sin((t - b) * 60);
+  return v;
+}
+
+function camAt(t) {
+  let cx = fx(t), cy = fy(t), z = Math.exp(fz(t)), r = fr(t) * Math.PI / 180;
+  // el kamerası hissi: çok düşük genlikli, düşük frekanslı sapma
+  const s0 = COVER * z;
+  const hx = Math.sin(t * 0.73 + 0.4) * 1.0 + Math.sin(t * 1.91 + 2.1) * 0.45 + Math.sin(t * 3.7) * 0.15;
+  const hy = Math.sin(t * 0.61 + 1.7) * 0.9 + Math.sin(t * 2.23 + 0.3) * 0.4 + Math.sin(t * 4.1 + 1) * 0.12;
+  const j = jolt(t);
+  cx += (hx * 2.4 + j * 3.0) / s0;
+  cy += (hy * 2.4 + j * 4.5) / s0;
+  r += (Math.sin(t * 0.53 + 0.9) * 0.10 + j * 0.25) * Math.PI / 180;
+
+  // En-boy oranı sabit 16:9; döndürülmüş görüş dikdörtgeni her zaman görselin içinde kalır
+  const s = COVER * z, hw = W / 2 / s, hh = H / 2 / s;
+  const c = Math.abs(Math.cos(r)), sn = Math.abs(Math.sin(r));
+  let ex = hw * c + hh * sn, ey = hw * sn + hh * c;
+  const k = Math.max(1, ex / (IW / 2), ey / (IH / 2));
+  if (k > 1) { z *= k; ex /= k; ey /= k; }
+  cx = clamp(cx, ex, IW - ex); cy = clamp(cy, ey, IH - ey);
+  return { cx, cy, z, r };
+}
+
+// ---------------------------------------------------------------------------
+// Kod tabanlı efektler (görsel uzayında, kamerayla birlikte hareket eder)
+// ---------------------------------------------------------------------------
+function sprite(r, g, b, size = 128) {
+  const c = mkCanvas(size, size), x = c.getContext("2d");
+  const gr = x.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+  gr.addColorStop(0, `rgba(${r},${g},${b},1)`);
+  gr.addColorStop(0.25, `rgba(${r},${g},${b},0.55)`);
+  gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  x.fillStyle = gr; x.fillRect(0, 0, size, size);
+  return c;
+}
+const SPR_WARM = sprite(255, 226, 170);
+const SPR_WHITE = sprite(255, 250, 235);
+const SPR_RED = sprite(235, 60, 50);
+
+// Işık düzeyi: 13.25'te düğmeye basılır, lamba kısa bir titremeyle söner
+function lampLevel(t) {
+  if (t < 13.25) return 1 + 0.02 * Math.sin(t * 7.3) * Math.sin(t * 2.9);
+  const k = t - 13.25;
+  const flick = [[0, 1], [0.05, 0.35], [0.1, 0.8], [0.16, 0.2], [0.22, 0.5], [0.3, 0.0]];
+  for (let i = 0; i < flick.length - 1; i++)
+    if (k < flick[i + 1][0]) {
+      const a = flick[i], b = flick[i + 1], u = (k - a[0]) / (b[0] - a[0]);
+      return a[1] + (b[1] - a[1]) * u;
+    }
+  return 0;
+}
+
+// Toz zerreleri: lamba ışığında süzülen, derinliğe göre paralaks yapan parçacıklar
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const MOTES = Array.from({ length: 110 }, () => ({
+  x: 380 + rnd() * 640, y: 20 + rnd() * 560, d: 0.6 + rnd() * 1.3,
+  ph: rnd() * 6.28, w: 0.3 + rnd() * 0.5, v: 4 + rnd() * 7,
+}));
+function drawMotes(g, t, cam, L) {
+  if (L <= 0.01) return;
+  g.globalCompositeOperation = "screen";
+  for (const m of MOTES) {
+    const par = (m.d - 1) * 0.45;
+    let y = m.y - t * m.v * m.d * 0.5 + Math.sin(t * m.w * 1.3 + m.ph) * 4;
+    y = ((y - 10) % 580 + 580) % 580 + 10;
+    const x = m.x + Math.sin(t * m.w + m.ph) * 9 * m.d - (cam.cx - 688) * par;
+    const yy = y - (cam.cy - 384) * par;
+    const dl = Math.hypot(x - 688, (yy - 10) * 1.2);
+    const lit = clamp(1 - dl / 520) ** 1.5 * L;
+    if (lit <= 0.01) continue;
+    const near = m.d > 1.55;
+    const size = near ? 11 * m.d : 3.2 * m.d;
+    g.globalAlpha = (near ? 0.10 : 0.55) * lit * (0.6 + 0.4 * Math.sin(t * 2 + m.ph));
+    g.drawImage(SPR_WARM, x - size, yy - size, size * 2, size * 2);
+  }
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+}
+
+// Balonları birbirine bağlayan noktalı çizginin gerçek nokta koordinatları
+const DOTS_A = [[1059,464],[1061,451],[1061,437],[1060,424],[1058,411],[1054,399],[1050,388]];
+const DOTS_B = [[808,229],[798,225],[789,219],[779,215],[768,210],[757,206],[747,204],[736,201],
+                [725,198],[714,196],[703,195],[692,194],[680,194],[669,194]];
+function drawPulse(g, dots, t0, t1, t) {
+  if (t < t0 - 0.2 || t > t1 + 1.2) return;
+  const n = dots.length, head = (t - t0) / (t1 - t0) * (n + 1) - 0.5;
+  const fade = 1 - smooth(t1, t1 + 1.2, t);
+  g.globalCompositeOperation = "screen";
+  for (let i = 0; i < n; i++) {
+    const dd = head - i;
+    const k = (dd >= 0 ? Math.exp(-dd * 0.45) * 0.75 + Math.exp(-dd * dd * 3) * 0.6 : Math.exp(-dd * dd * 4)) * fade;
+    if (k < 0.01) continue;
+    const [x, y] = dots[i];
+    g.globalAlpha = clamp(k); g.drawImage(SPR_WARM, x - 22, y - 22, 44, 44);
+    g.globalAlpha = clamp(k * 0.9); g.drawImage(SPR_WHITE, x - 8, y - 8, 16, 16);
+  }
+  // ışığın başı (kuyruklu yıldız)
+  const hi = clamp(head, 0, n - 1), i0 = Math.floor(hi), i1 = Math.min(n - 1, i0 + 1), u = hi - i0;
+  const hx = dots[i0][0] + (dots[i1][0] - dots[i0][0]) * u, hy = dots[i0][1] + (dots[i1][1] - dots[i0][1]) * u;
+  const hk = win(t, t0, t1, 0.15);
+  if (hk > 0.01) { g.globalAlpha = hk * 0.8; g.drawImage(SPR_WARM, hx - 45, hy - 45, 90, 90); }
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+}
+
+function drawWorld(g, t, cam) {
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  const s = COVER * cam.z;
+  g.translate(W / 2, H / 2); g.rotate(cam.r); g.scale(s, s); g.translate(-cam.cx, -cam.cy);
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+  g.drawImage(img, 0, 0, IW, IH);
+
+  const L = clamp(lampLevel(t), 0, 1.2);
+  // lamba haresi
+  g.globalCompositeOperation = "screen";
+  g.globalAlpha = 0.22 * L; g.drawImage(SPR_WARM, 688 - 560, 20 - 400, 1120, 800);
+  g.globalAlpha = 0.35 * L; g.drawImage(SPR_WHITE, 688 - 200, 18 - 70, 400, 140);
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+
+  drawMotes(g, t, cam, L);
+  drawPulse(g, DOTS_A, 5.25, 6.35, t);
+  drawPulse(g, DOTS_B, 8.05, 9.15, t);
+
+  // kırmızı X — iki kısa alarm nabzı
+  const xk = Math.exp(-(((t - 4.28) / 0.13) ** 2)) + 0.8 * Math.exp(-(((t - 4.62) / 0.13) ** 2));
+  if (xk > 0.01) {
+    g.globalAlpha = clamp(xk * 0.45);
+    g.drawImage(SPR_RED, 1072 - 70, 565 - 70, 140, 140);
+    g.globalAlpha = 1;
+  }
+  // ışık düğmesi parlaması
+  const sk = Math.exp(-(((t - 13.22) / 0.09) ** 2));
+  if (sk > 0.01) {
+    g.globalCompositeOperation = "screen";
+    g.globalAlpha = sk; g.drawImage(SPR_WHITE, 1172 - 40, 268 - 40, 80, 80);
+    g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+  }
+  g.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Post-prodüksiyon (ekran uzayı): renk, alan derinliği, vinyet, gren, altyazı
+// ---------------------------------------------------------------------------
+const acc = mkCanvas(W, H), accG = acc.getContext("2d");
+const sub = mkCanvas(W, H), subG = sub.getContext("2d");
+const blurC = mkCanvas(W / 2, H / 2), blurG = blurC.getContext("2d");
+const grain = mkCanvas(512, 512);
+{
+  const g = grain.getContext("2d"), d = g.createImageData(512, 512);
+  for (let i = 0; i < d.data.length; i += 4) { const v = 128 + (rnd() - 0.5) * 255; d.data[i] = d.data[i+1] = d.data[i+2] = v; d.data[i+3] = 255; }
+  g.putImageData(d, 0, 0);
+}
+
+function grade(g, t) {
+  // gelecek kaygısı: soğuk ton
+  const worry = win(t, 6.6, 8.2, 0.5);
+  if (worry > 0.01) { g.globalCompositeOperation = "soft-light"; g.globalAlpha = 0.35 * worry; g.fillStyle = "rgb(60,95,170)"; g.fillRect(0, 0, W, H); }
+  // pişmanlık: anı gibi soluk, sıcak
+  const regret = win(t, 9.4, 10.9, 0.5);
+  if (regret > 0.01) {
+    g.globalCompositeOperation = "saturation"; g.globalAlpha = 0.55 * regret; g.fillStyle = "rgb(128,128,128)"; g.fillRect(0, 0, W, H);
+    g.globalCompositeOperation = "soft-light"; g.globalAlpha = 0.3 * regret; g.fillStyle = "rgb(210,160,100)"; g.fillRect(0, 0, W, H);
+  }
+  // gece: ışık söndükten sonra mavi karanlık
+  const night = 1 - clamp(lampLevel(t) * 1.4);
+  const nightK = t > 13.2 ? night : 0;
+  if (nightK > 0.01) {
+    g.globalCompositeOperation = "multiply"; g.globalAlpha = nightK; g.fillStyle = "rgb(38,50,96)"; g.fillRect(0, 0, W, H);
+    g.globalCompositeOperation = "screen"; g.globalAlpha = 0.06 * nightK; g.fillStyle = "rgb(90,120,200)"; g.fillRect(0, 0, W, H);
+  }
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+}
+
+function depthOfField(g, t, cam) {
+  const k = clamp((cam.z - 1.15) / 0.8) * 0.9 + 0.1;
+  blurG.filter = "blur(7px)";
+  blurG.drawImage(acc, 0, 0, W / 2, H / 2);
+  blurG.filter = "none";
+  blurG.globalCompositeOperation = "destination-in";
+  blurG.save(); blurG.translate(W / 4, H / 4); blurG.scale(1, H / W);
+  const m = blurG.createRadialGradient(0, 0, W * 0.16, 0, 0, W * 0.34);
+  m.addColorStop(0, "rgba(0,0,0,0)"); m.addColorStop(1, `rgba(0,0,0,${k})`);
+  blurG.fillStyle = m; blurG.fillRect(-W / 2, -W / 2, W, W);
+  blurG.restore(); blurG.globalCompositeOperation = "source-over";
+  g.drawImage(blurC, 0, 0, W, H);
+  blurG.clearRect(0, 0, W / 2, H / 2);
+}
+
+function vignette(g, t) {
+  const strong = 0.42 + 0.18 * win(t, 9.4, 10.9, 0.5);
+  g.save(); g.translate(W / 2, H / 2); g.scale(1, H / W * 1.25);
+  const v = g.createRadialGradient(0, 0, W * 0.28, 0, 0, W * 0.62);
+  v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, `rgba(0,0,0,${strong})`);
+  g.fillStyle = v; g.fillRect(-W, -W, W * 2, W * 2); g.restore();
+  // altyazı okunurluğu için alt degrade
+  const b = g.createLinearGradient(0, H - 330, 0, H);
+  b.addColorStop(0, "rgba(0,0,0,0)"); b.addColorStop(1, "rgba(0,0,0,0.42)");
+  g.fillStyle = b; g.fillRect(0, H - 330, W, 330);
+}
+
+const SUBS = [
+  [0.5, 2.9,  "Gece. Oda sessiz… ama zihin henüz kapanmadı."],
+  [3.6, 5.3,  "Önce, bugünden yarım kalanlar."],
+  [6.5, 8.1,  "Sonra yarın. Henüz yaşanmamış olanın ağırlığı."],
+  [9.3, 10.9, "Ve çok eskilerden bir pişmanlık."],
+  [11.2, 13.0, "Dün, bugün, yarın… aynı küçük odada."],
+  [13.5, 14.85, "Işığı kapat. Yarın, yarının işi."],
+];
+function subtitles(g, t) {
+  g.font = 'italic 400 54px "Fraunces"';
+  g.textBaseline = "alphabetic";
+  for (const [a, b, text] of SUBS) {
+    if (t < a - 0.05 || t > b + 0.05) continue;
+    const fadeOut = 1 - smooth(b - 0.35, b, t);
+    const words = text.split(" "), space = g.measureText(" ").width;
+    const widths = words.map(w => g.measureText(w).width);
+    let x = W / 2 - (widths.reduce((p, c) => p + c, 0) + space * (words.length - 1)) / 2;
+    const y = H - 96;
+    words.forEach((w, i) => {
+      const inK = smooth(a + i * 0.075, a + i * 0.075 + 0.45, t);
+      const al = inK * fadeOut;
+      if (al > 0.005) {
+        g.globalAlpha = al;
+        g.shadowColor = "rgba(0,0,0,0.75)"; g.shadowBlur = 22;
+        g.fillStyle = "#fbf6ec";
+        g.fillText(w, x, y + (1 - inK) * 14);
+        g.shadowBlur = 0;
+      }
+      x += widths[i] + space;
+    });
+  }
+  g.globalAlpha = 1;
+}
+
+function post(g, t, cam, frameNo) {
+  g.drawImage(acc, 0, 0);
+  depthOfField(g, t, cam);
+  grade(g, t);
+  vignette(g, t);
+  // gren
+  g.globalCompositeOperation = "overlay"; g.globalAlpha = 0.07;
+  const ox = (frameNo * 97) % 512, oy = (frameNo * 211) % 512;
+  for (let x = -ox; x < W; x += 512) for (let y = -oy; y < H; y += 512) g.drawImage(grain, x, y);
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+  subtitles(g, t);
+  // siyahtan açılış / siyaha kapanış
+  const black = 1 - smooth(0, 0.6, t) + smooth(14.35, 15, t);
+  if (black > 0.001) { g.globalAlpha = clamp(black); g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalAlpha = 1; }
+}
+
+// Bir kare: SUB adet alt kare birikimi (gerçek hareket bulanıklığı) + post
+function renderAt(t, frameNo) {
+  const dt = SHUTTER / FPS;
+  for (let i = 0; i < SUB; i++) {
+    const ts = t + (SUB > 1 ? (i / (SUB - 1) - 0.5) * dt : 0);
+    drawWorld(subG, ts, camAt(ts));
+    accG.globalAlpha = 1 / (i + 1);
+    accG.drawImage(sub, 0, 0);
+  }
+  accG.globalAlpha = 1;
+  post(out, t, camAt(t), frameNo);
+}
+
+window.renderFrame = f => { renderAt(f / FPS, f); return canvas.toDataURL("image/jpeg", 0.95); };
+window.META = { FPS, DUR, frames: Math.round(FPS * DUR) };
+
+window.ready = (async () => {
+  await img.decode();
+  IW = img.naturalWidth; IH = img.naturalHeight; COVER = Math.max(W / IW, H / IH);
+  await document.fonts.load('italic 400 54px "Fraunces"', "ışğüşöç");
+  if (RENDER) return true;
+  let start = performance.now();
+  canvas.addEventListener("click", () => { start = performance.now(); });
+  const loop = now => {
+    const t = ((now - start) / 1000) % (DUR + 1);
+    renderAt(Math.min(t, DUR), Math.floor(t * FPS));
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+  return true;
+})();
+</script>
+</body>
+</html>
