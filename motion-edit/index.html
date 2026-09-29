@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Işık Kapanmadan Önce — Motion Edit</title>
+<style>
+  @font-face { font-family: "Fraunces"; font-style: italic; font-weight: 400;
+    src: url(fonts/fraunces-latin.woff2) format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+  @font-face { font-family: "Fraunces"; font-style: italic; font-weight: 400;
+    src: url(fonts/fraunces-latin-ext.woff2) format("woff2");
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: absolute; inset: 0; margin: auto; width: 100vw; height: calc(100vw * 9 / 16); cursor: pointer; }
+  @media (min-aspect-ratio: 16/9) { canvas { height: 100vh; width: calc(100vh * 16 / 9); } }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+"use strict";
+// ============================================================================
+// SABİTLER
+// ============================================================================
+const W = 1920, H = 1080, FPS = 30, DUR = 15;
+const RENDER = new URLSearchParams(location.search).has("render");
+const SUB = RENDER ? 10 : 1;       // hareket bulanıklığı alt kareleri
+const SHUTTER = 0.5;               // 180° obtüratör
+const IW = 1376, IH = 768, COVER = Math.max(W / IW, H / IH);
+const C0 = [688, 384];             // orijinal kompozisyonun merkezi
+const GAMMA = 0.35;                // dolly: yakın katmanlar zoom'da daha çok büyür
+
+// Katmanlar: görsel koordinatı (layers.json) + derinlik (1 = karakter düzlemi)
+const F_BG = 0.90, F_BED = 0.95, F_CHAR = 1.0, F_FRONT = 1.07, F_DUST = 1.28;
+const LAYERS = {
+  background_clean:          { x: 0,    y: 0,   f: F_BG },
+  lamp:                      { x: 561,  y: 0,   f: F_BG },
+  switch:                    { x: 1153, y: 228, f: F_BG },
+  bed:                       { x: 70,   y: 422, f: F_BED },
+  character:                 { x: 593,  y: 332, f: F_CHAR },
+  dot_1_unfinished_today:    { x: 805,  y: 507, f: F_FRONT },
+  dot_2_future_worry:        { x: 795,  y: 405, f: F_FRONT },
+  dot_3_old_regret:          { x: 606,  y: 313, f: F_FRONT },
+  bubble_1_unfinished_today: { x: 832,  y: 462, f: F_FRONT },
+  bubble_2_future_worry:     { x: 777,  y: 190, f: F_FRONT },
+  bubble_3_old_regret:       { x: 313,  y: 89,  f: F_FRONT },
+  label_1_unfinished_today:  { x: 1088, y: 439, f: F_FRONT },
+  label_2_future_worry:      { x: 844,  y: 147, f: F_FRONT },
+  label_3_old_regret:        { x: 306,  y: 52,  f: F_FRONT },
+};
+const IMG = {};
+
+const canvas = document.getElementById("c");
+const out = canvas.getContext("2d");
+
+// ============================================================================
+// YARDIMCILAR
+// ============================================================================
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, u) => a + (b - a) * u;
+const smooth = (a, b, t) => { const x = clamp((t - a) / (b - a)); return x * x * (3 - 2 * x); };
+const win = (t, a, b, f = 0.4) => smooth(a - f, a + f, t) * (1 - smooth(b - f, b + f, t));
+const easeOutCubic = u => 1 - (1 - clamp(u)) ** 3;
+const easeOutQuint = u => 1 - (1 - clamp(u)) ** 5;
+const easeInBack = u => { u = clamp(u); const s = 1.9; return u * u * ((s + 1) * u - s); };
+const mkCanvas = (w, h) => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
+// Sönümlü yay (step response): 0 → 1, aşma + sönüm
+function spring(t, w = 20, z = 0.45) {
+  if (t <= 0) return 0;
+  const wd = w * Math.sqrt(1 - z * z);
+  return 1 - Math.exp(-z * w * t) * (Math.cos(wd * t) + (z * w / wd) * Math.sin(wd * t));
+}
+let seed = 11;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+
+// Fritsch–Carlson monoton kübik — aşmasız, hızı sürekli kamera eğrileri
+function monotone(xs, ys) {
+  const n = xs.length, d = [], m = new Array(n);
+  for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
+  m[0] = d[0]; m[n - 1] = d[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    if (d[i - 1] * d[i] <= 0) { m[i] = 0; continue; }
+    const h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i], w1 = 2 * h1 + h0, w2 = h1 + 2 * h0;
+    m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]);
+  }
+  return x => {
+    if (x <= xs[0]) return ys[0];
+    if (x >= xs[n - 1]) return ys[n - 1];
+    let i = 0; while (x > xs[i + 1]) i++;
+    const h = xs[i + 1] - xs[i], t = (x - xs[i]) / h, t2 = t * t, t3 = t2 * t;
+    return (2*t3 - 3*t2 + 1) * ys[i] + (t3 - 2*t2 + t) * h * m[i] + (-2*t3 + 3*t2) * ys[i + 1] + (t3 - t2) * h * m[i + 1];
+  };
+}
+
+// ============================================================================
+// YÖNETMEN PLANI — KAMERA
+// [zaman, hedefX, hedefY, hedef katman derinliği, zoom, roll°]
+// Hedef, o derinlikteki katmanda kadrajın merkezine gelecek nokta.
+// ============================================================================
+const KEYS = [
+  [0.0,  688, 384, F_CHAR,  1.08, -1.2],  // 1 geniş açılış
+  [1.5,  690, 420, F_CHAR,  1.40, -0.5],  //   derinlikli itiş
+  [2.9,  690, 450, F_CHAR,  2.00,  0.0],  //   karakter yakın plan
+  [3.3,  720, 462, F_CHAR,  2.02,  0.3],  //   balon 1 doğuyor → bakış sağa
+  [4.1, 1030, 548, F_FRONT, 1.72,  1.0],  // 2 BUGÜN (etiket dahil)
+  [5.3, 1035, 545, F_FRONT, 1.82,  0.6],
+  [6.2, 1045, 425, F_FRONT, 2.10, -0.4],  //   çizilen noktaları takip
+  [6.8,  950, 300, F_FRONT, 2.00, -0.8],  // 3 YARIN
+  [8.1,  945, 296, F_FRONT, 2.10, -0.5],
+  [8.9,  740, 218, F_FRONT, 2.15,  0.3],  //   çizgi sola kıvrılıyor
+  [9.5,  490, 205, F_FRONT, 2.00,  0.8],  // 4 DÜN
+  [10.8, 488, 200, F_FRONT, 2.12,  0.5],
+  [12.0, 660, 380, F_CHAR,  1.55, -10.0], // 5 dönüşlü geri çekiliş
+  [13.3, 688, 392, F_CHAR,  1.10,  0.0],  //   oda bütün
+  [15.0, 688, 400, F_CHAR,  1.17,  0.0],  // 6 karanlıkta itiş
+];
+const KT = KEYS.map(k => k[0]);
+const fcx = monotone(KT, KEYS.map(k => C0[0] + (k[1] - C0[0]) / k[3]));
+const fcy = monotone(KT, KEYS.map(k => C0[1] + (k[2] - C0[1]) / k[3]));
+const ffocus = monotone(KT, KEYS.map(k => k[3]));
+const fz = monotone(KT, KEYS.map(k => Math.log(k[4])));
+const froll = monotone(KT, KEYS.map(k => k[5]));
+
+const BEATS = [3.02, 4.3, 4.65, 13.2];   // kamera tepkisi verilen vuruşlar
+function jolt(t) {
+  let v = 0;
+  for (const b of BEATS) if (t > b) v += Math.exp(-(t - b) * 13) * Math.sin((t - b) * 58);
+  return v;
+}
+
+const layerScale = (z, f) => COVER * z * Math.pow(z, GAMMA * (f - 1));
+
+function camera(t) {
+  let cx = fcx(t), cy = fcy(t), z = Math.exp(fz(t)), r = froll(t) * Math.PI / 180;
+  const s0 = COVER * z, j = jolt(t);
+  const hx = Math.sin(t * 0.73 + 0.4) + Math.sin(t * 1.91 + 2.1) * 0.45 + Math.sin(t * 3.7) * 0.15;
+  const hy = Math.sin(t * 0.61 + 1.7) * 0.9 + Math.sin(t * 2.23 + 0.3) * 0.4 + Math.sin(t * 4.1 + 1) * 0.12;
+  cx += (hx * 2.2 + j * 2.6) / s0;
+  cy += (hy * 2.2 + j * 4.0) / s0;
+  r += (Math.sin(t * 0.53 + 0.9) * 0.1 + j * 0.22) * Math.PI / 180;
+
+  // En-boy oranı sabit; en uzak katman (arka plan) dönüşte bile kadrajı tamamen kaplar
+  const c = Math.abs(Math.cos(r)), sn = Math.abs(Math.sin(r));
+  const ext = zz => { const s = layerScale(zz, F_BG), hw = W / 2 / s, hh = H / 2 / s;
+    return [hw * c + hh * sn, hw * sn + hh * c]; };
+  let [ex, ey] = ext(z);
+  const k = Math.max(1, ex / (IW / 2), ey / (IH / 2));
+  if (k > 1) { z *= Math.pow(k, 1 / (1 + GAMMA * (F_BG - 1))) * 1.0005; [ex, ey] = ext(z); }
+  let bx = C0[0] + F_BG * (cx - C0[0]), by = C0[1] + F_BG * (cy - C0[1]);
+  bx = clamp(bx, ex, IW - ex); by = clamp(by, ey, IH - ey);
+  cx = C0[0] + (bx - C0[0]) / F_BG; cy = C0[1] + (by - C0[1]) / F_BG;
+  return { cx, cy, z, r, focus: ffocus(t) };
+}
+
+// Katmanın kendi kamerası: paralaks (merkez) + dolly (ölçek)
+function applyLayer(g, cam, f) {
+  const s = layerScale(cam.z, f);
+  const lx = C0[0] + f * (cam.cx - C0[0]), ly = C0[1] + f * (cam.cy - C0[1]);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.translate(W / 2, H / 2); g.rotate(cam.r); g.scale(s, s); g.translate(-lx, -ly);
+}
+// Alan derinliği: odak düzleminden uzaklaştıkça bulanıklık (ekran pikseli)
+const dof = (cam, f) => Math.min(7, Math.abs(f - cam.focus) * 34 * Math.max(0, cam.z - 1.05));
+
+// ============================================================================
+// ZAMAN ÇİZELGESİ — OLAYLAR
+// ============================================================================
+const EV = {
+  dot1: 3.0,  b1: 3.12, label1: 3.55, xPulse: [4.3, 4.65],
+  lineA: [5.3, 6.4],
+  dot2: 6.38, b2: 6.5,  label2: 6.85,
+  lineB: [8.05, 9.1],
+  dot3: 9.15, b3: 9.3,  label3: 9.8,
+  breathe: [10.9, 13.2], flow: [11.2, 12.5],
+  click: 13.2,
+  out3: 13.55, out2: 13.72, out1: 13.89,
+};
+const FOCUS = [ // hangi balon ilgi odağında
+  ["b1", 3.4, 5.6], ["b2", 6.5, 8.3], ["b3", 9.3, 10.9],
+];
+const attention = (id, t) => { let a = 0; for (const [k, s, e] of FOCUS) if (k === id) a = Math.max(a, win(t, s, e, 0.35)); return a; };
+const anyFocus = t => Math.max(...FOCUS.map(([k, s, e]) => win(t, s, e, 0.35)));
+
+// Balonlar: pivot = iz balonuna bakan kuyruk
+const BUBBLES = {
+  b1: { img: "bubble_1_unfinished_today", dot: "dot_1_unfinished_today", label: "label_1_unfinished_today",
+        pivot: [846, 534], dotC: [816.5, 519], born: EV.b1, dotAt: EV.dot1, labelAt: EV.label1, gone: EV.out1 },
+  b2: { img: "bubble_2_future_worry", dot: "dot_2_future_worry", label: "label_2_future_worry",
+        pivot: [828, 386], dotC: [804, 413.5], born: EV.b2, dotAt: EV.dot2, labelAt: EV.label2, gone: EV.out2 },
+  b3: { img: "bubble_3_old_regret", dot: "dot_3_old_regret", label: "label_3_old_regret",
+        pivot: [592, 300], dotC: [618.5, 325], born: EV.b3, dotAt: EV.dot3, labelAt: EV.label3, gone: EV.out3 },
+};
+
+// Noktalı ışık çizgisi (orijinaldeki gerçek nokta konumları)
+const DOTS_A = [[1059,464],[1061,451],[1061,437],[1060,424],[1058,411],[1054,399],[1050,388]];
+const DOTS_B = [[808,229],[798,225],[789,219],[779,215],[768,210],[757,206],[747,204],[736,201],
+                [725,198],[714,196],[703,195],[692,194],[680,194],[669,194]];
+
+// Işık: 13.2'de düğme, lamba kısa bir titremeyle söner
+function lampLevel(t) {
+  if (t < 13.25) return 1 + 0.02 * Math.sin(t * 7.3) * Math.sin(t * 2.9);
+  const k = t - 13.25, fl = [[0, 1], [0.05, 0.3], [0.1, 0.8], [0.16, 0.15], [0.22, 0.45], [0.3, 0]];
+  for (let i = 0; i < fl.length - 1; i++) if (k < fl[i + 1][0]) return lerp(fl[i][1], fl[i + 1][1], (k - fl[i][0]) / (fl[i + 1][0] - fl[i][0]));
+  return 0;
+}
+
+// ============================================================================
+// SPRITE'LAR
+// ============================================================================
+function sprite(r, g, b, size = 128, core = 0.25) {
+  const c = mkCanvas(size, size), x = c.getContext("2d");
+  const gr = x.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gr.addColorStop(0, `rgba(${r},${g},${b},1)`); gr.addColorStop(core, `rgba(${r},${g},${b},0.55)`);
+  gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  x.fillStyle = gr; x.fillRect(0, 0, size, size); return c;
+}
+const SPR_WARM = sprite(255, 226, 170), SPR_WHITE = sprite(255, 250, 236), SPR_RED = sprite(232, 58, 48, 128, 0.35);
+const SPR_SHADOW = sprite(40, 30, 55, 128, 0.45);
+
+// ============================================================================
+// ÇİZİM — SAHNE
+// ============================================================================
+// Bulanıklık seviyeleri bir kez hesaplanır; çizimde iki seviye arasında birebir geçiş yapılır
+const LEVELS = [0, 0.6, 1.2, 2.2, 3.6, 6];   // kaynak pikseli
+const PAD = 22, CACHE = {}, TMP = {};
+const SHADOWS = {}, SH_PAD = 24;
+function buildCaches() {
+  for (const name of Object.keys(LAYERS)) {
+    const src = IMG[name], isBg = name === "background_clean", pad = isBg ? 0 : PAD, lv = [];
+    for (const r of LEVELS) {
+      const c = mkCanvas(src.width + pad * 2, src.height + pad * 2), x = c.getContext("2d");
+      if (r > 0) x.filter = `blur(${r}px)`;
+      x.drawImage(src, pad, pad);
+      // arka planın kenarları bulanıklıkta kararmasın
+      if (isBg && r > 0) { x.filter = "none"; x.globalCompositeOperation = "destination-over"; x.drawImage(src, 0, 0); }
+      lv.push(c);
+    }
+    CACHE[name] = { lv, pad };
+  }
+  for (const id of Object.keys(BUBBLES)) {
+    const im = IMG[BUBBLES[id].img], c = mkCanvas(im.width + SH_PAD * 2, im.height + SH_PAD * 2), x = c.getContext("2d");
+    x.filter = "blur(7px) brightness(0)"; x.drawImage(im, SH_PAD, SH_PAD); SHADOWS[id] = c;
+  }
+}
+function blurred(name, srcBlur, dim = 0) {
+  const { lv } = CACHE[name];
+  srcBlur = clamp(srcBlur, 0, LEVELS[LEVELS.length - 1]);
+  let i = 0; while (i < LEVELS.length - 2 && LEVELS[i + 1] < srcBlur) i++;
+  const u = clamp((srcBlur - LEVELS[i]) / (LEVELS[i + 1] - LEVELS[i]));
+  if (dim < 0.01 && u < 0.02) return lv[i];
+  if (dim < 0.01 && u > 0.98) return lv[i + 1];
+  let c = TMP[name]; if (!c) c = TMP[name] = mkCanvas(lv[0].width, lv[0].height);
+  const x = c.getContext("2d");
+  x.globalCompositeOperation = "source-over"; x.globalAlpha = 1; x.clearRect(0, 0, c.width, c.height);
+  x.globalAlpha = 1 - u; x.drawImage(lv[i], 0, 0);
+  x.globalCompositeOperation = "lighter"; x.globalAlpha = u; x.drawImage(lv[i + 1], 0, 0);
+  if (dim > 0.01) { x.globalCompositeOperation = "source-atop"; x.globalAlpha = dim; x.fillStyle = "#0b0a12"; x.fillRect(0, 0, c.width, c.height); }
+  x.globalCompositeOperation = "source-over"; x.globalAlpha = 1;
+  return c;
+}
+// ekran bulanıklığı (px) / katman ölçeği → kaynak bulanıklığı
+function drawLayer(g, name, screenBlur, scale, dim = 0) {
+  const L = LAYERS[name], { pad } = CACHE[name];
+  g.drawImage(blurred(name, screenBlur / scale, dim), L.x - pad, L.y - pad);
+}
+
+
+function drawBackground(g, t, cam) {
+  applyLayer(g, cam, F_BG);
+  const b = dof(cam, F_BG), S = layerScale(cam.z, F_BG);
+  drawLayer(g, "background_clean", b, S);
+  drawLayer(g, "lamp", b, S);
+  // ışık düğmesi: basılma
+  const press = t > EV.click ? 1 - 0.06 * Math.exp(-(t - EV.click) * 18) : 1;
+  g.save(); g.translate(1173, 268); g.scale(press, press); g.translate(-1173, -268);
+  drawLayer(g, "switch", b, S); g.restore();
+  const L = clamp(lampLevel(t), 0, 1.2);
+  g.globalCompositeOperation = "screen";
+  g.globalAlpha = 0.2 * L; g.drawImage(SPR_WARM, 688 - 560, 20 - 400, 1120, 800);
+  g.globalAlpha = 0.32 * L; g.drawImage(SPR_WHITE, 688 - 200, 18 - 70, 400, 140);
+  const sk = Math.exp(-(((t - EV.click - 0.02) / 0.09) ** 2));
+  if (sk > 0.01) { g.globalAlpha = sk; g.drawImage(SPR_WHITE, 1173 - 42, 268 - 42, 84, 84); }
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+}
+
+function drawBed(g, t, cam) {
+  applyLayer(g, cam, F_BED);
+  drawLayer(g, "bed", dof(cam, F_BED), layerScale(cam.z, F_BED));
+}
+
+function drawCharacter(g, t, cam) {
+  applyLayer(g, cam, F_CHAR);
+  const b = dof(cam, F_CHAR);
+  // nefes + hafif salınım, pivot ayaklar
+  const br = Math.sin(t * Math.PI * 2 / 3.3), sway = Math.sin(t * Math.PI * 2 / 5.2 + 0.6);
+  const hop = t > EV.dot1 ? 0.018 * Math.exp(-(t - EV.dot1) * 9) * Math.sin((t - EV.dot1) * 30) : 0;
+  const sy = 1 + 0.007 * br + hop, sx = 1 - 0.0035 * br - hop * 0.5;
+  // zemin gölgesi (karaktere bağlı)
+  g.globalAlpha = 0.55 * (1 - 0.1 * br);
+  g.drawImage(SPR_SHADOW, 688 - 110 * sx, 697 - 26, 220 * sx, 52);
+  g.globalAlpha = 1;
+  g.save(); g.translate(686, 702); g.rotate(sway * 0.004); g.scale(sx, sy); g.translate(-686, -702);
+  drawLayer(g, "character", b, layerScale(cam.z, F_CHAR)); g.restore();
+
+  // düşünce kıvılcımları: üç balonun yönüne uçuşan ışıklar (önsezi)
+  const dirs = [[1, 0.9], [1, -0.7], [-1, -0.8]];
+  dirs.forEach(([dx, dy], i) => {
+    const s = 2.1 + i * 0.18, u = clamp((t - s) / 0.85);
+    if (u <= 0 || u >= 1) return;
+    const e = easeOutCubic(u), px = 690 + dx * 70 * e, py = 332 + dy * 60 * e - 18 * e;
+    const a = Math.sin(u * Math.PI);
+    g.globalCompositeOperation = "screen";
+    g.globalAlpha = a * 0.9; g.drawImage(SPR_WARM, px - 16, py - 16, 32, 32);
+    g.globalAlpha = a; g.drawImage(SPR_WHITE, px - 4, py - 4, 8, 8);
+    g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+  });
+}
+
+// ---- noktalı ışık çizgisi -------------------------------------------------
+function dotState(i, n, t0, t1, outAt, t) {
+  const at = t0 + (t1 - t0) * (i / Math.max(1, n - 1));
+  const pop = spring(t - at, 30, 0.42);
+  const gone = outAt ? 1 - smooth(outAt, outAt + 0.14, t) : 1;
+  return { pop: Math.max(0, pop) * gone, age: t - at };
+}
+function drawLine(g, t, cam) {
+  applyLayer(g, cam, F_FRONT);
+  const segs = [
+    { dots: DOTS_A, t0: EV.lineA[0], t1: EV.lineA[1], out0: 13.95, flow0: EV.flow[0] },
+    { dots: DOTS_B, t0: EV.lineB[0], t1: EV.lineB[1], out0: 13.62, flow0: EV.flow[0] + 0.55 },
+  ];
+  g.globalCompositeOperation = "screen";
+  for (const s of segs) {
+    const n = s.dots.length;
+    for (let i = 0; i < n; i++) {
+      const outAt = s.out0 + (n - 1 - i) * 0.018;
+      const st = dotState(i, n, s.t0, s.t1, outAt, t);
+      if (st.pop <= 0.01) continue;
+      const [x, y] = s.dots[i];
+      const fresh = Math.exp(-Math.max(0, st.age) * 3.5);             // yeni doğan noktanın parlaması
+      const fu = (t - s.flow0) / 0.9 * (n + 3) - i;                     // akış dalgası
+      const flow = fu > 0 && fu < 5 ? Math.sin(fu / 5 * Math.PI) : 0;
+      const L = 0.55 + 0.45 * clamp(lampLevel(t));
+      const glow = (0.28 + 0.9 * fresh + 0.8 * flow) * L;
+      const r = 3.3 * st.pop;
+      g.globalAlpha = clamp(glow * st.pop); g.drawImage(SPR_WARM, x - 16 * st.pop, y - 16 * st.pop, 32 * st.pop, 32 * st.pop);
+      g.globalAlpha = clamp(0.95 * st.pop); g.drawImage(SPR_WHITE, x - r * 1.6, y - r * 1.6, r * 3.2, r * 3.2);
+    }
+    // çizim başındaki kuyruklu ışık
+    const u = (t - s.t0) / (s.t1 - s.t0);
+    if (u > -0.05 && u < 1.15) {
+      const hi = clamp(u, 0, 1) * (n - 1), i0 = Math.floor(hi), i1 = Math.min(n - 1, i0 + 1), f = hi - i0;
+      const hx = lerp(s.dots[i0][0], s.dots[i1][0], f), hy = lerp(s.dots[i0][1], s.dots[i1][1], f);
+      const a = win(t, s.t0, s.t1, 0.12);
+      g.globalAlpha = a * 0.85; g.drawImage(SPR_WARM, hx - 46, hy - 46, 92, 92);
+      g.globalAlpha = a; g.drawImage(SPR_WHITE, hx - 10, hy - 10, 20, 20);
+    }
+  }
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+}
+
+
+// balon içi efektler (balonla aynı dönüşümde)
+function bubbleFx(g, id, t, a) {
+  if (id === "b1") {           // kırmızı X — iki alarm nabzı
+    const k = EV.xPulse.reduce((s, p, i) => s + (i ? 0.8 : 1) * Math.exp(-(((t - p) / 0.12) ** 2)), 0) + 0.15 * win(t, 4.2, 5.4);
+    if (k > 0.01) { g.globalAlpha = clamp(k * 0.5) * a; g.drawImage(SPR_RED, 1072 - 70, 565 - 70, 140, 140); }
+  }
+  if (id === "b2") {           // buluttan ince yağmur
+    const life = win(t, 6.9, 13.7, 0.3) * a;
+    if (life > 0.01) {
+      g.strokeStyle = "rgb(80,120,190)"; g.lineWidth = 1.5; g.lineCap = "round";
+      for (let i = 0; i < 12; i++) {
+        const ph = (i * 0.618) % 1, speed = 1.3 + (i % 3) * 0.25, u = (t * speed + ph) % 1;
+        const px = 1028 + ((i * 37) % 44), py = 257 + u * 34;
+        g.globalAlpha = life * Math.sin(u * Math.PI) * 0.8;
+        g.beginPath(); g.moveTo(px, py); g.lineTo(px - 1.2, py + 6); g.stroke();
+      }
+    }
+  }
+  g.globalAlpha = 1;
+}
+
+function drawBubbles(g, t, cam) {
+  const breatheK = win(t, EV.breathe[0], EV.breathe[1], 0.3);
+  const focusAny = anyFocus(t);
+  for (const id of ["b3", "b2", "b1"]) {
+    const B = BUBBLES[id], L = LAYERS[B.img];
+    const att = attention(id, t), dim = clamp(focusAny - att) * 0.9;
+    const blurBase = dof(cam, F_FRONT) + dim * 2.2;
+
+    // --- iz balonu
+    const dPop = spring(t - B.dotAt, 30, 0.4) * (1 - smooth(B.gone + 0.12, B.gone + 0.26, t));
+    // --- ana balon: doğuş stili
+    let s = 0, a = 1, rot = 0, extraBlur = 0, dx = 0, dy = 0;
+    const u = t - B.born;
+    if (id === "b1") { s = spring(u, 21, 0.42); rot = (1 - clamp(s)) * -0.14; }            // keskin, acil
+    if (id === "b2") {                                                                         // tedirgin
+      s = spring(u, 15, 0.33); rot = (1 - clamp(s)) * 0.12;
+      const shiver = win(t, 6.95, 8.3, 0.25) * (0.6 + 0.4 * Math.sin(t * 5.1));
+      rot += shiver * 0.006 * Math.sin(t * 71); dx = shiver * 0.7 * Math.sin(t * 63 + 1); dy = shiver * 0.5 * Math.sin(t * 57);
+    }
+    if (id === "b3") {                                                                         // anı gibi
+      const e = easeOutQuint(u / 1.25); s = u > 0 ? lerp(0.9, 1, e) : 0; a = clamp(u / 0.9);
+      extraBlur = (1 - easeOutCubic(u / 1.0)) * 12;
+    }
+    // birlikte nefes
+    s *= 1 + 0.012 * breatheK * Math.sin((t - EV.breathe[0]) * Math.PI * 2 / 1.25 + (id === "b2" ? 0.6 : id === "b3" ? 1.2 : 0));
+    // X vuruşunda balon 1 zıplaması
+    if (id === "b1") for (const p of EV.xPulse) if (t > p) s *= 1 + 0.03 * Math.exp(-(t - p) * 16) * Math.sin((t - p) * 40 + 0.3);
+    // kapanış: kuyruğa doğru küçülerek geri çekilme
+    const g1 = clamp((t - B.gone) / 0.28);
+    if (g1 > 0) { s *= 1 - easeInBack(g1); a *= 1 - smooth(0.6, 1, g1); }
+
+    applyLayer(g, cam, F_FRONT);
+    const S = layerScale(cam.z, F_FRONT);
+    // iz balonu
+    if (dPop > 0.01) {
+      const D = LAYERS[B.dot], [cx, cy] = B.dotC;
+      g.save(); g.translate(cx, cy); g.scale(dPop, dPop); g.translate(-cx, -cy);
+      g.globalAlpha = id === "b3" ? clamp((t - B.dotAt) / 0.4) : 1;
+      drawLayer(g, B.dot, blurBase + (id === "b3" ? extraBlur * 0.5 : 0), S, dim * 0.28);
+      g.restore(); g.globalAlpha = 1;
+    }
+    if (s > 0.004 && a > 0.004) {
+      const [px, py] = B.pivot;
+      // yumuşak gölge (balon duvardan biraz önde)
+      g.save(); g.translate(px + dx, py + dy); g.rotate(rot); g.scale(s, s); g.translate(-px, -py);
+      g.globalAlpha = a * 0.22 * clamp(lampLevel(t) + 0.3);
+      g.drawImage(SHADOWS[id], L.x + 7 - SH_PAD, L.y + 11 - SH_PAD);
+      g.globalAlpha = a;
+      drawLayer(g, B.img, blurBase + extraBlur, S * Math.max(0.3, s), dim * 0.28);
+      bubbleFx(g, id, t, a);
+      g.restore(); g.globalAlpha = 1;
+    }
+    drawLabel(g, id, t, cam, blurBase);
+  }
+}
+
+// ---- etiketler: her biri kendi karakteriyle girer --------------------------
+function drawLabel(g, id, t, cam, blurBase) {
+  const B = BUBBLES[id], name = B.label, L = LAYERS[name];
+  const u = t - B.labelAt;
+  if (u <= 0) return;
+  let a = 1, dx = 0, dy = 0, sc = 1, blur = 0;
+  if (id === "b1") { const s = spring(u, 17, 0.55); dx = (1 - s) * 90; a = clamp(u / 0.18); }      // sağdan kayar
+  if (id === "b2") { const s = spring(u, 19, 0.3); dy = (1 - s) * -46; a = clamp(u / 0.15); }     // yukarıdan düşer, seker
+  if (id === "b3") { const e = easeOutCubic(u / 0.9); a = e; sc = lerp(1.08, 1, e); blur = (1 - e) * 10; } // bulanıktan netleşir
+  const g1 = clamp((t - B.gone + 0.05) / 0.22);
+  a *= 1 - g1; dx += g1 * (id === "b1" ? 30 : 0); dy += g1 * (id === "b2" ? -14 : 0);
+  if (a <= 0.004) return;
+  const cx = L.x + L.w / 2, cy = L.y + L.h / 2;
+  g.save(); g.translate(cx + dx, cy + dy); g.scale(sc, sc); g.translate(-cx, -cy);
+  // soldan sağa açılan maske (sadece balon 1 etiketi)
+  if (id === "b1") { const rev = easeOutCubic(u / 0.45); g.beginPath(); g.rect(L.x - 4, L.y - 4, (L.w + 8) * rev + 40, L.h + 8); g.clip(); }
+  g.globalAlpha = a;
+  drawLayer(g, name, blurBase + blur, layerScale(cam.z, F_FRONT) * sc);
+  g.restore(); g.globalAlpha = 1;
+}
+
+// ---- toz zerreleri (en ön katman, güçlü paralaks) -------------------------
+const MOTES = Array.from({ length: 120 }, () => ({
+  x: 330 + rnd() * 720, y: 10 + rnd() * 600, d: 0.6 + rnd() * 1.3, ph: rnd() * 6.28, w: 0.3 + rnd() * 0.5, v: 4 + rnd() * 7,
+}));
+function drawMotes(g, t, cam) {
+  const Lamp = clamp(lampLevel(t));
+  if (Lamp <= 0.01) return;
+  applyLayer(g, cam, F_DUST);
+  g.globalCompositeOperation = "screen";
+  for (const m of MOTES) {
+    let y = m.y - t * m.v * m.d * 0.5 + Math.sin(t * m.w * 1.3 + m.ph) * 4;
+    y = ((y - 10) % 600 + 600) % 600 + 10;
+    const x = m.x + Math.sin(t * m.w + m.ph) * 9 * m.d;
+    const lit = clamp(1 - Math.hypot(x - 688, (y - 10) * 1.2) / 540) ** 1.5 * Lamp;
+    if (lit <= 0.01) continue;
+    const near = m.d > 1.6, size = near ? 10 * m.d : 2.6 * m.d;
+    g.globalAlpha = (near ? 0.09 : 0.5) * lit * (0.6 + 0.4 * Math.sin(t * 2 + m.ph));
+    g.drawImage(SPR_WARM, x - size, y - size, size * 2, size * 2);
+  }
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+}
+
+function drawScene(g, t) {
+  const cam = camera(t);
+  g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "medium";
+  drawBackground(g, t, cam);
+  drawBed(g, t, cam);
+  drawCharacter(g, t, cam);
+  drawLine(g, t, cam);
+  drawBubbles(g, t, cam);
+  drawMotes(g, t, cam);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  return cam;
+}
+
+// ============================================================================
+// POST — renk, vinyet, gren, altyazı
+// ============================================================================
+const acc = mkCanvas(W, H), accG = acc.getContext("2d");
+const sub = mkCanvas(W, H), subG = sub.getContext("2d");
+const grain = mkCanvas(512, 512);
+{ const g = grain.getContext("2d"), d = g.createImageData(512, 512);
+  for (let i = 0; i < d.data.length; i += 4) { const v = 128 + (rnd() - 0.5) * 255; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
+  g.putImageData(d, 0, 0); }
+
+function grade(g, t) {
+  const worry = attention("b2", t);
+  if (worry > 0.01) { g.globalCompositeOperation = "soft-light"; g.globalAlpha = 0.32 * worry; g.fillStyle = "rgb(60,95,170)"; g.fillRect(0, 0, W, H); }
+  const regret = attention("b3", t);
+  if (regret > 0.01) {
+    g.globalCompositeOperation = "saturation"; g.globalAlpha = 0.5 * regret; g.fillStyle = "rgb(128,128,128)"; g.fillRect(0, 0, W, H);
+    g.globalCompositeOperation = "soft-light"; g.globalAlpha = 0.3 * regret; g.fillStyle = "rgb(210,160,100)"; g.fillRect(0, 0, W, H);
+  }
+  const night = t > 13.2 ? 1 - clamp(lampLevel(t) * 1.4) : 0;
+  if (night > 0.01) {
+    g.globalCompositeOperation = "multiply"; g.globalAlpha = night; g.fillStyle = "rgb(40,52,98)"; g.fillRect(0, 0, W, H);
+    g.globalCompositeOperation = "screen"; g.globalAlpha = 0.06 * night; g.fillStyle = "rgb(90,120,200)"; g.fillRect(0, 0, W, H);
+  }
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+}
+
+function vignette(g, t) {
+  const strong = 0.4 + 0.18 * attention("b3", t);
+  g.save(); g.translate(W / 2, H / 2); g.scale(1, H / W * 1.25);
+  const v = g.createRadialGradient(0, 0, W * 0.28, 0, 0, W * 0.62);
+  v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, `rgba(0,0,0,${strong})`);
+  g.fillStyle = v; g.fillRect(-W, -W, W * 2, W * 2); g.restore();
+  const b = g.createLinearGradient(0, H - 330, 0, H);
+  b.addColorStop(0, "rgba(0,0,0,0)"); b.addColorStop(1, "rgba(0,0,0,0.42)");
+  g.fillStyle = b; g.fillRect(0, H - 330, W, 330);
+}
+
+const SUBS = [
+  [0.5, 2.9,   "Gece. Oda sessiz… ama zihin henüz kapanmadı."],
+  [3.5, 5.4,   "Önce, bugünden yarım kalanlar."],
+  [6.5, 8.2,   "Sonra yarın. Henüz yaşanmamış olanın ağırlığı."],
+  [9.4, 10.9,  "Ve çok eskilerden bir pişmanlık."],
+  [11.2, 13.0, "Dün, bugün, yarın… aynı küçük odada."],
+  [13.45, 14.85, "Işığı kapat. Yarın, yarının işi."],
+];
+function subtitles(g, t) {
+  g.font = 'italic 400 54px "Fraunces"'; g.textBaseline = "alphabetic";
+  for (const [a, b, text] of SUBS) {
+    if (t < a - 0.05 || t > b + 0.05) continue;
+    const fadeOut = 1 - smooth(b - 0.35, b, t);
+    const words = text.split(" "), space = g.measureText(" ").width, widths = words.map(w => g.measureText(w).width);
+    let x = W / 2 - (widths.reduce((p, c) => p + c, 0) + space * (words.length - 1)) / 2;
+    words.forEach((w, i) => {
+      const inK = smooth(a + i * 0.075, a + i * 0.075 + 0.45, t), al = inK * fadeOut;
+      if (al > 0.005) {
+        g.globalAlpha = al; g.shadowColor = "rgba(0,0,0,0.75)"; g.shadowBlur = 22; g.fillStyle = "#fbf6ec";
+        g.fillText(w, x, H - 96 + (1 - inK) * 14); g.shadowBlur = 0;
+      }
+      x += widths[i] + space;
+    });
+  }
+  g.globalAlpha = 1;
+}
+
+function post(g, t, frameNo) {
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.drawImage(acc, 0, 0);
+  grade(g, t);
+  vignette(g, t);
+  g.globalCompositeOperation = "overlay"; g.globalAlpha = 0.065 + 0.03 * attention("b3", t);
+  const ox = (frameNo * 97) % 512, oy = (frameNo * 211) % 512;
+  for (let x = -ox; x < W; x += 512) for (let y = -oy; y < H; y += 512) g.drawImage(grain, x, y);
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+  subtitles(g, t);
+  const black = 1 - smooth(0, 0.6, t) + smooth(14.35, 15, t);
+  if (black > 0.001) { g.globalAlpha = clamp(black); g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalAlpha = 1; }
+}
+
+function renderAt(t, frameNo) {
+  const dt = SHUTTER / FPS;
+  for (let i = 0; i < SUB; i++) {
+    const ts = t + (SUB > 1 ? (i / (SUB - 1) - 0.5) * dt : 0);
+    drawScene(subG, ts);
+    accG.globalAlpha = 1 / (i + 1); accG.drawImage(sub, 0, 0);
+  }
+  accG.globalAlpha = 1;
+  post(out, t, frameNo);
+}
+
+window.renderFrame = f => { renderAt(f / FPS, f); return canvas.toDataURL("image/jpeg", 0.95); };
+window.META = { FPS, DUR, frames: Math.round(FPS * DUR) };
+window.ready = (async () => {
+  await Promise.all(Object.keys(LAYERS).map(n => new Promise((res, rej) => {
+    const im = new Image(); im.onload = () => { IMG[n] = im; LAYERS[n].w = im.width; LAYERS[n].h = im.height; res(); }; im.onerror = rej; im.src = `assets/${n}.png`;
+  })));
+  await document.fonts.load('italic 400 54px "Fraunces"', "ışğüşöç");
+  buildCaches();
+  if (RENDER) return true;
+  let start = performance.now();
+  canvas.addEventListener("click", () => { start = performance.now(); });
+  const loop = now => {
+    const t = ((now - start) / 1000) % (DUR + 1);
+    renderAt(Math.min(t, DUR), Math.floor(t * FPS));
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+  return true;
+})();
+</script>
+</body>
+</html>
