@@ -16,6 +16,7 @@ Cikti (out/):
 import csv
 import json
 import re
+import shutil
 import statistics
 from collections import Counter
 from datetime import datetime
@@ -31,10 +32,13 @@ WINDOW_DAYS = 365         # outlier taban penceresi
 STALLED_DAYS = 60         # son uzun videodan beri bu kadar gun -> durmus
 BIG_SUBS = 100_000
 LOW_TRACTION_MEDIAN = 2000   # >=5 uzun video olup medyan izlenme bunun altindaysa "zayif"
+# hedef kota: (core icin) kademe basina, neighbor ve global toplam
 TARGETS = {"core-big": 5, "core-rising": 7, "core-stalled-or-weak": 4, "neighbor": 14, "global": 7}
+BUCKETS = ["own", "ja-big", "ja-rising", "ja-stalled-or-weak", "ja-other", "global"]
+LABELS_FILE = Path("labels.txt")   # opsiyonel: "kanal adi veya channel_id | core/neighbor/global/own"
 
 CATS = {}
-JP = re.compile(r"[぀-ヿ一-鿿]")
+KANA = re.compile(r"[぀-ヿ]")   # Japonca'yi ayirt eder (Cince kanji icerir ama kana icermez)
 
 
 def parse_ts(s):
@@ -130,18 +134,23 @@ def add_outliers(rows):
 
 
 # -------------------------------------------------------------- kanallar ----
-def bucket(cls, flags, subs):
-    if cls == "neighbor" or cls == "global":
-        return cls
-    if cls != "core":
-        return cls or "unlabeled"
+def tier(flags, subs):
     if "stalled" in flags or "weak" in flags:
-        return "core-stalled-or-weak"
+        return "stalled-or-weak"
     if subs >= BIG_SUBS:
-        return "core-big"
+        return "big"
     if "new_channel_first_video" in flags:
-        return "core-rising"
-    return "core-other"
+        return "rising"
+    return "other"
+
+
+def bucket(cls, flags, subs, is_ja):
+    """Kategori tamamen veriden cikar. core/neighbor ayrimi nitel oldugu icin sonradan etiketlenir."""
+    if cls == "own":
+        return "own"
+    if cls == "global" or not is_ja:
+        return "global"
+    return "ja-" + tier(flags, subs)
 
 
 def channel_row(raw, rows, meds, now):
@@ -178,14 +187,15 @@ def channel_row(raw, rows, meds, now):
         flags.append("weak")
     if first and (now - first).days <= 365:
         flags.append("new_channel_first_video")
-    if meta["class"] != "global" and titles and sum(bool(JP.search(t)) for t in titles) / len(titles) < 0.5:
+    kana_share = sum(bool(KANA.search(t)) for t in titles) / len(titles) if titles else 1
+    is_ja = kana_share >= 0.3
+    if not is_ja:
         flags.append("titles_not_japanese")
-    if not meta["class"]:
-        flags.append("no_class_label")
 
     return {
         "class": meta["class"], "note": meta["note"],
-        "bucket": bucket(meta["class"], flags, subs),
+        "bucket": bucket(meta["class"], flags, subs, is_ja),
+        "title_kana_share": round(kana_share, 2), "tier": tier(flags, subs),
         "channel": sn["title"], "handle": sn.get("customUrl", ""),
         "url": f"https://www.youtube.com/channel/{ch['id']}", "channel_id": ch["id"],
         "country": sn.get("country", br.get("country", "")),
@@ -313,8 +323,16 @@ def build(write_files=False):
     cat_file = RAW.parent / "video_categories.json"
     if cat_file.exists():
         CATS.update({c["id"]: c["snippet"]["title"] for c in json.loads(cat_file.read_text(encoding="utf-8"))})
+    labels = {}
+    if LABELS_FILE.exists():
+        for line in LABELS_FILE.read_text(encoding="utf-8").splitlines():
+            if "|" in line and not line.lstrip().startswith("#"):
+                k, v = line.rsplit("|", 1)
+                labels[k.strip()] = v.strip().lower()
     for p in sorted(RAW.glob("*.json")):
         raw = json.loads(p.read_text(encoding="utf-8"))
+        raw["meta"]["class"] = (labels.get(raw["channel"]["id"]) or labels.get(raw["channel"]["snippet"]["title"])
+                                or raw["meta"].get("class", ""))
         now = parse_ts(raw["meta"]["collected_at"])
         rows = [video_flat(v, now) for v in raw["videos"]]
         meds = add_outliers(rows)
@@ -326,7 +344,7 @@ def build(write_files=False):
         chans.append(crow)
         vids.extend(rows)
         briefs.append(brief(crow, rows))
-    order = {b: i for i, b in enumerate(["own", *TARGETS, "core-other"])}
+    order = {b: i for i, b in enumerate(BUCKETS)}
     chans.sort(key=lambda c: (order.get(c["bucket"], 99), -c["subs"]))
     return chans, vids, briefs
 
@@ -340,31 +358,41 @@ def write_csv(path, rows):
 
 
 def report(chans):
-    lines = ["KOTA KONTROLU (hedef / mevcut)"]
     counts = Counter(c["bucket"] for c in chans)
-    for b, t in TARGETS.items():
-        have = counts.get(b, 0)
-        lines.append(f"  {b:24s} {t:>3} / {have:<3} {'OK' if have >= t else 'EKSIK ' + str(t - have)}")
-    for b in counts:
-        if b not in TARGETS:
-            lines.append(f"  {b:24s}  -  / {counts[b]:<3} (hedefsiz)")
+    lines = ["VERIDEN CIKAN KATEGORILER (kanal sayisi)"]
+    lines += [f"  {b:22s} {counts.get(b, 0)}" for b in BUCKETS if counts.get(b)]
+    labeled = [c for c in chans if c["class"] in ("core", "neighbor")]
+    lines += ["", "KOTA KONTROLU (core/neighbor etiketi verilen kanallar uzerinden)"]
+    if not labeled:
+        lines.append("  Henuz core/neighbor etiketi yok (labels.txt). Etiketledikten sonra analyze.py'yi tekrar calistir.")
+    else:
+        def have(key):
+            if key == "neighbor":
+                return sum(c["class"] == "neighbor" for c in chans)
+            if key == "global":
+                return counts.get("global", 0)
+            return sum(c["class"] == "core" and c["tier"] == key.removeprefix("core-") for c in chans)
+        for key, target in TARGETS.items():
+            n = have(key)
+            lines.append(f"  {key:24s} hedef {target:>2} / mevcut {n:<3} {'OK' if n >= target else 'EKSIK ' + str(target - n)}")
+    lines.append(f"  (etiketsiz ja kanal: {sum(1 for c in chans if not c['class'] and c['bucket'].startswith('ja-'))})")
     lines.append("")
-    for b in sorted(counts, key=lambda x: order_key(x)):
-        lines.append(f"== {b} ({counts[b]})")
-        for c in (c for c in chans if c["bucket"] == b):
-            lines.append(f"  - {c['channel']} | abone {c['subs']:,} | ilk video {c['first_video']} | "
+    for b in BUCKETS:
+        group = [c for c in chans if c["bucket"] == b]
+        if not group:
+            continue
+        lines.append(f"== {b} ({len(group)})")
+        for c in group:
+            lines.append(f"  - {c['channel']} [{c['class'] or '-'}] | abone {c['subs']:,} | ilk video {c['first_video']} | "
                          f"uzun/12ay {c['long_12m']} | medyan izl. {c['median_views_long']} | "
                          f"max outlier {c['max_outlier_ratio_long']} | {c['flags'] or '-'}")
         lines.append("")
     return "\n".join(lines)
 
 
-def order_key(b):
-    return (["own", *TARGETS, "core-other"].index(b) if b in ["own", *TARGETS, "core-other"] else 99)
-
-
 def main():
     OUT.mkdir(exist_ok=True)
+    shutil.rmtree(OUT / "channels", ignore_errors=True)   # eski klasorler karismasin
     chans, vids, briefs = build(write_files=True)
     if not chans:
         raise SystemExit("data/raw/ bos. Once collect.py calistir.")

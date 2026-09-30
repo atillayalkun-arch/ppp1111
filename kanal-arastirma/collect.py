@@ -5,8 +5,8 @@ Hicbir eleme/secim yapmaz; tum kanal gecmisini (Shorts dahil) kaydeder.
 Analiz ve secim sonraki asamalardadir (analyze.py, select_sample.py), boylece
 kurallari degistirmek icin API'yi tekrar cagirmak gerekmez.
 
-Girdi : channels.txt   satir bicimi:  <link | @handle | UC...> | <sinif> | <not>
-        sinif: core / neighbor / global / own     not: serbest (ornegin arama kelimesi)
+Girdi : channels.txt   her satira bir kanal:  <link | @handle | UC...>
+        (istege bagli:  | <sinif> | <not>   -  sinif bos birakilabilir; etiketleme veri geldikten sonra yapilir)
 Cikti : data/raw/<channel_id>.json  (API'nin verdigi tum alanlar)
 
     export YT_API_KEY=...            (PowerShell: $env:YT_API_KEY="...")

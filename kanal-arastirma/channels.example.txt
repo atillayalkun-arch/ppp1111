@@ -1,5 +1,4 @@
-# Bicim:  <link | @handle | UC...> | <sinif> | <not>
-# sinif : core (ana nis) / neighbor (komsu nis) / global / own (kendi kanalin)
-# not   : serbest; komsu nisler icin hangi arama kelimesiyle buldugun yazilabilir
-https://www.youtube.com/@Hitotoki_psychology | core | 人間心理
-https://www.youtube.com/@mirashinrigaku | own |
+# Her satira bir kanal (link, @handle veya UC... kimligi). Etiket gerekmez.
+# Istege bagli:  <kanal> | <sinif> | <not>   (sinif: core / neighbor / global / own)
+https://www.youtube.com/@Hitotoki_psychology
+https://www.youtube.com/@mirashinrigaku | own

@@ -1,0 +1,4 @@
+# Veri toplandiktan SONRA, eleme asamasinda kullanilir (opsiyonel).
+# Bicim:  <kanal adi veya channel_id> | <sinif>     sinif: core / neighbor / global / own
+# Sonra sadece  python analyze.py  calistirman yeter (API'ye tekrar gitmez).
+ひととき心理学 | core
