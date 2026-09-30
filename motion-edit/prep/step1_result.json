@@ -1,0 +1,78 @@
+{
+ "background_room.png": {
+  "json_mean_diff": 28.53915302759609,
+  "note": "tam tuval, nesneler cikarilmis - fark beklenir"
+ },
+ "bubble_2_future_worry.png": {
+  "json_xy": [
+   777,
+   190
+  ],
+  "opaque_px": 56073,
+  "json_mean_diff": 0.0,
+  "best_shift": [
+   0,
+   0
+  ],
+  "best_xy": [
+   777,
+   190
+  ],
+  "best_mean_diff": 0.0,
+  "diff_at_shift_0": 0.0
+ },
+ "bubble_3_old_regret.png": {
+  "json_xy": [
+   313,
+   89
+  ],
+  "opaque_px": 60533,
+  "json_mean_diff": 0.0,
+  "best_shift": [
+   0,
+   0
+  ],
+  "best_xy": [
+   313,
+   89
+  ],
+  "best_mean_diff": 0.0,
+  "diff_at_shift_0": 0.0
+ },
+ "bubble_1_unfinished_today.png": {
+  "json_xy": [
+   805,
+   462
+  ],
+  "opaque_px": 58252,
+  "json_mean_diff": 0.0,
+  "best_shift": [
+   0,
+   0
+  ],
+  "best_xy": [
+   805,
+   462
+  ],
+  "best_mean_diff": 0.0,
+  "diff_at_shift_0": 0.0
+ },
+ "character.png": {
+  "json_xy": [
+   593,
+   332
+  ],
+  "opaque_px": 47204,
+  "json_mean_diff": 0.0,
+  "best_shift": [
+   0,
+   0
+  ],
+  "best_xy": [
+   593,
+   332
+  ],
+  "best_mean_diff": 0.0,
+  "diff_at_shift_0": 0.0
+ }
+}

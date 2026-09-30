@@ -1,0 +1,504 @@
+{
+ "room_lines": {
+  "back_wall": {
+   "left_x": 272.16,
+   "right_x": 1105.28,
+   "top_y": 138.57,
+   "bottom_y": 624.9,
+   "left_x_std": 0.24,
+   "right_x_std": 0.88,
+   "left_dark_y_runs": [
+    [
+     137,
+     520
+    ],
+    [
+     539,
+     540
+    ],
+    [
+     713,
+     715
+    ],
+    [
+     729,
+     731
+    ]
+   ],
+   "right_dark_y_runs": [
+    [
+     137,
+     258
+    ],
+    [
+     335,
+     440
+    ],
+    [
+     453,
+     455
+    ],
+    [
+     482,
+     496
+    ],
+    [
+     541,
+     545
+    ],
+    [
+     585,
+     589
+    ],
+    [
+     664,
+     667
+    ]
+   ],
+   "top_dark_x_runs": [
+    [
+     270,
+     347
+    ],
+    [
+     631,
+     1108
+    ]
+   ],
+   "bottom_dark_x_runs": [
+    [
+     88,
+     90
+    ],
+    [
+     565,
+     568
+    ],
+    [
+     586,
+     592
+    ],
+    [
+     599,
+     627
+    ],
+    [
+     683,
+     688
+    ],
+    [
+     747,
+     855
+    ],
+    [
+     929,
+     930
+    ],
+    [
+     935,
+     935
+    ],
+    [
+     940,
+     940
+    ],
+    [
+     964,
+     966
+    ],
+    [
+     1001,
+     1004
+    ],
+    [
+     1058,
+     1059
+    ],
+    [
+     1142,
+     1145
+    ]
+   ],
+   "note": "sol/sag duvar dikeyleri ve ust kenar karakter/balonlar yuzunden kesintili; runs gorunen parcalari verir",
+   "bottom_y_std": 1.05,
+   "occlusions": {
+    "bottom_right_corner": "balon 1 tarafindan kapali; sag duvar alt ucu ve BR kose noktasi gorunmez, diyagonal fitten cikarimdir",
+    "top_left_corner": "gorunur",
+    "left_wall_bottom": "yatak/kutu tarafindan kesintili"
+   }
+  },
+  "corner_diagonals": {
+   "TL": {
+    "x=a*y+b": [
+     1.6074,
+     49.71
+    ],
+    "inliers": 414
+   },
+   "TR": {
+    "x=a*y+b": [
+     -1.5873,
+     1325.59
+    ],
+    "inliers": 414
+   },
+   "BR": {
+    "x=a*y+b": [
+     1.5714,
+     125.43
+    ],
+    "inliers": 382
+   },
+   "BL": {
+    "x=a*y+b": [
+     -1.666,
+     1313.86
+    ],
+    "inliers": 127
+   }
+  },
+  "corner_points": {
+   "TL": [
+    272.5,
+    138.6
+   ],
+   "TR": [
+    1105.6,
+    138.6
+   ],
+   "BR": [
+    1107.3,
+    624.9
+   ],
+   "BL_diag_at_y768": [
+    36.0,
+    767
+   ]
+  },
+  "diag_hit_canvas_edges": {
+   "TL_x_at_y0": 49.7,
+   "TR_x_at_y0": 1325.6,
+   "BR_x_at_y767": 1330.7,
+   "BL_x_at_y767": 36.0
+  }
+ },
+ "dotted_lines": {
+  "arc1_upper": {
+   "dots": [
+    [
+     669.3,
+     194.2,
+     34,
+     243.0
+    ],
+    [
+     680.3,
+     194.2,
+     32,
+     240.0
+    ],
+    [
+     691.8,
+     194.4,
+     34,
+     240.0
+    ],
+    [
+     702.9,
+     195.4,
+     32,
+     242.0
+    ],
+    [
+     714.0,
+     196.8,
+     34,
+     242.0
+    ],
+    [
+     725.2,
+     198.6,
+     33,
+     240.0
+    ],
+    [
+     736.1,
+     200.8,
+     40,
+     242.0
+    ],
+    [
+     746.9,
+     203.7,
+     35,
+     240.0
+    ],
+    [
+     757.7,
+     206.7,
+     35,
+     241.0
+    ],
+    [
+     768.4,
+     210.5,
+     38,
+     243.0
+    ],
+    [
+     778.7,
+     214.8,
+     38,
+     243.0
+    ],
+    [
+     788.9,
+     219.5,
+     36,
+     241.0
+    ],
+    [
+     798.8,
+     224.7,
+     36,
+     244.0
+    ],
+    [
+     808.6,
+     229.3,
+     25,
+     241.0
+    ]
+   ],
+   "fmt": "[cx,cy,area_px,peak_lum]",
+   "count": 14,
+   "spacing_mean_min_max": [
+    11.19,
+    10.83,
+    11.5
+   ],
+   "removed_false_positive": [
+    661.6,
+    197.6
+   ],
+   "reason": "balon 3 kenar cizgisi/ic beyazi"
+  },
+  "arc2_right": {
+   "dots": [
+    [
+     1050.7,
+     387.9,
+     54,
+     241.0
+    ],
+    [
+     1054.4,
+     399.0,
+     44,
+     246.0
+    ],
+    [
+     1057.9,
+     411.4,
+     39,
+     248.0
+    ],
+    [
+     1060.2,
+     424.5,
+     39,
+     248.0
+    ],
+    [
+     1061.3,
+     437.7,
+     39,
+     245.0
+    ],
+    [
+     1061.2,
+     450.9,
+     34,
+     248.0
+    ],
+    [
+     1059.4,
+     464.1,
+     44,
+     248.0
+    ]
+   ],
+   "fmt": "[cx,cy,area_px,peak_lum]",
+   "count": 7,
+   "spacing_mean_min_max": [
+    12.94,
+    11.7,
+    13.32
+   ],
+   "removed_false_positive": [
+    1066.4,
+    473.0
+   ],
+   "reason": "balon 1 ust kenari"
+  }
+ },
+ "missing_elements_bbox": {
+  "bed": {
+   "x": 75,
+   "y": 427,
+   "w": 525,
+   "h": 333,
+   "right": 600,
+   "bottom": 760,
+   "note": "sinir esigi 24; golge/ince kenarlar hafif tasabilir"
+  },
+  "lamp": {
+   "x": 564,
+   "y": 0,
+   "w": 248,
+   "h": 47,
+   "right": 812,
+   "bottom": 47
+  },
+  "switch": {
+   "x": 1157,
+   "y": 232,
+   "w": 32,
+   "h": 73,
+   "right": 1189,
+   "bottom": 305
+  },
+  "label_3_old_regret": {
+   "x": 307,
+   "y": 53,
+   "w": 193,
+   "h": 47,
+   "right": 500,
+   "bottom": 100
+  },
+  "label_2_future_worry": {
+   "x": 845,
+   "y": 148,
+   "w": 212,
+   "h": 44,
+   "right": 1057,
+   "bottom": 192
+  },
+  "label_1_unfinished_today": {
+   "x": 1080,
+   "y": 440,
+   "w": 249,
+   "h": 50,
+   "right": 1329,
+   "bottom": 490
+  }
+ },
+ "trace_bubbles_in_assets": {
+  "bubble2_small": [
+   790,
+   400,
+   818,
+   426
+  ],
+  "bubble3_small": [
+   604,
+   310,
+   633,
+   338
+  ],
+  "bubble1_small": [
+   803,
+   506,
+   830,
+   533
+  ],
+  "note": "asetlerin icinde, kenarlari yari saydam; ayrica kesim gerekmez (repo prep.py dot_* olarak ayirmisti)"
+ },
+ "canvas": {
+  "width": 1376,
+  "height": 768
+ },
+ "assets_json_verified": {
+  "background_room.png": {
+   "json_mean_diff": 28.53915302759609,
+   "note": "tam tuval, nesneler cikarilmis - fark beklenir"
+  },
+  "bubble_2_future_worry.png": {
+   "json_xy": [
+    777,
+    190
+   ],
+   "opaque_px": 56073,
+   "json_mean_diff": 0.0,
+   "best_shift": [
+    0,
+    0
+   ],
+   "best_xy": [
+    777,
+    190
+   ],
+   "best_mean_diff": 0.0,
+   "diff_at_shift_0": 0.0
+  },
+  "bubble_3_old_regret.png": {
+   "json_xy": [
+    313,
+    89
+   ],
+   "opaque_px": 60533,
+   "json_mean_diff": 0.0,
+   "best_shift": [
+    0,
+    0
+   ],
+   "best_xy": [
+    313,
+    89
+   ],
+   "best_mean_diff": 0.0,
+   "diff_at_shift_0": 0.0
+  },
+  "bubble_1_unfinished_today.png": {
+   "json_xy": [
+    805,
+    462
+   ],
+   "opaque_px": 58252,
+   "json_mean_diff": 0.0,
+   "best_shift": [
+    0,
+    0
+   ],
+   "best_xy": [
+    805,
+    462
+   ],
+   "best_mean_diff": 0.0,
+   "diff_at_shift_0": 0.0
+  },
+  "character.png": {
+   "json_xy": [
+    593,
+    332
+   ],
+   "opaque_px": 47204,
+   "json_mean_diff": 0.0,
+   "best_shift": [
+    0,
+    0
+   ],
+   "best_xy": [
+    593,
+    332
+   ],
+   "best_mean_diff": 0.0,
+   "diff_at_shift_0": 0.0
+  }
+ },
+ "glow_and_misc": {
+  "lamp_centre_x": 688.0,
+  "note": "lamba govdesi arka planda yok, sadece isik halesi var"
+ },
+ "_generated_by": "prep/step1_validate.py, step2_diff.py, step3_measure.py, step3b_finalize.py"
+}

@@ -1,0 +1,6 @@
+{"canvas":{"width":1376,"height":768},"assets":[
+{"order":1,"file":"background_room.png","x":0,"y":0,"width":1376,"height":768},
+{"order":2,"file":"bubble_2_future_worry.png","x":777,"y":190,"width":341,"height":232},
+{"order":3,"file":"bubble_3_old_regret.png","x":313,"y":89,"width":353,"height":248},
+{"order":4,"file":"bubble_1_unfinished_today.png","x":805,"y":462,"width":353,"height":238},
+{"order":5,"file":"character.png","x":593,"y":332,"width":189,"height":373}]}
