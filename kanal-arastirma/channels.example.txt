@@ -1,4 +1,5 @@
-# Her satir: kanal linki | @handle | UC... kimligi   [| grup]
-# Grup etiketleri: core-big, core-rising, core-stalled, neighbor, global
-https://www.youtube.com/@Hitotoki_psychology | core-rising
-https://www.youtube.com/@mirashinrigaku | own
+# Bicim:  <link | @handle | UC...> | <sinif> | <not>
+# sinif : core (ana nis) / neighbor (komsu nis) / global / own (kendi kanalin)
+# not   : serbest; komsu nisler icin hangi arama kelimesiyle buldugun yazilabilir
+https://www.youtube.com/@Hitotoki_psychology | core | 人間心理
+https://www.youtube.com/@mirashinrigaku | own |
