@@ -1,0 +1,4 @@
+# Her satira bir kanal (link, @handle veya UC... kimligi). Etiket gerekmez.
+# Istege bagli:  <kanal> | <sinif> | <not>   (sinif: core / neighbor / global / own)
+https://www.youtube.com/@Hitotoki_psychology
+https://www.youtube.com/@mirashinrigaku | own
