@@ -3,3 +3,5 @@ kamera-animasyonu/preview-*.jpg
 kanal-arastirma/out/
 kanal-arastirma/channels.txt
 kanal-arastirma/data/
+__pycache__/
+*.pyc
