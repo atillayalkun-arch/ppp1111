@@ -6,8 +6,10 @@ API cagirmaz (data/raw/ okur). Esikleri asagida degistirip istedigin kadar tekra
     python analyze.py
 
 Cikti (out/):
-  channels_full.csv   kanal basina tum alanlar + hesaplanan metrikler + bayraklar + bucket
-  videos_full.csv     tum videolar (Shorts dahil), tum alanlar + outlier orani
+  channels/<bucket>/<kanal>/profile.md   okunabilir kanal profili (her kanal ayri)
+  channels/<bucket>/<kanal>/videos.csv   o kanalin tum videolari (Excel'de acilir)
+  channels_full.csv   tum kanallar tek tabloda (karsilastirma icin)
+  videos_full.csv     tum kanallarin tum videolari (karsilastirma icin)
   group_report.txt    bucket bazinda kanal listesi ve hedef kota karsilastirmasi
   channel_briefs.json AI'ya (Gemini vb.) verilecek kompakt ozet
 """
@@ -31,6 +33,7 @@ BIG_SUBS = 100_000
 LOW_TRACTION_MEDIAN = 2000   # >=5 uzun video olup medyan izlenme bunun altindaysa "zayif"
 TARGETS = {"core-big": 5, "core-rising": 7, "core-stalled-or-weak": 4, "neighbor": 14, "global": 7}
 
+CATS = {}
 JP = re.compile(r"[぀-ヿ一-鿿]")
 
 
@@ -88,7 +91,7 @@ def video_flat(v, now):
         "engagement": round(((likes or 0) + (comments or 0)) / views, 4) if views else 0,
         "vph_avg": round(views / age_h, 1),
         "views_per_day": round(views / max(age_h / 24, 1), 1),
-        "category_id": sn.get("categoryId", ""),
+        "category": CATS.get(sn.get("categoryId", ""), sn.get("categoryId", "")),
         "default_language": sn.get("defaultLanguage", ""),
         "default_audio_language": sn.get("defaultAudioLanguage", ""),
         "tag_count": len(tags),
@@ -223,6 +226,8 @@ def channel_row(raw, rows, meds, now):
         "avg_tag_count": round(sum(r["tag_count"] for r in rows) / len(rows), 1) if rows else "",
         "playlist_count": len(pls),
         "top_playlists": " | ".join(f"{p['snippet']['title']} ({p['contentDetails'].get('itemCount', 0)})" for p in top_pls),
+        "avatar_url": next((sn.get("thumbnails", {})[k]["url"] for k in ("high", "medium", "default") if k in sn.get("thumbnails", {})), ""),
+        "banner_url": ch.get("brandingSettings", {}).get("image", {}).get("bannerExternalUrl", ""),
         "keywords": " ".join(br.get("keywords", "").split())[:300],
         "topics": topics(ch),
         "made_for_kids": ch.get("status", {}).get("madeForKids", ""),
@@ -245,9 +250,69 @@ def brief(crow, rows):
     }
 
 
+# ------------------------------------------------- kanal basina cikti ----
+def safe(s):
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", s).strip("_")[:60] or "kanal"
+
+
+def vline(r):
+    o = f" | outlier {r['outlier_ratio']}x" if r["outlier_ratio"] != "" else (" | cok yeni" if r["too_new"] else "")
+    kind = "SHORT" if r["is_short"] else f"{r['duration_min']} dk"
+    return (f"- [{r['title']}]({r['url']}) | {r['published']} | {kind} | {r['views']:,} izlenme | "
+            f"begeni {r['likes']} | yorum {r['comments']}{o}")
+
+
+def profile_md(crow, rows, raw):
+    ch = raw["channel"]
+    longs = [r for r in rows if not r["is_short"]]
+    mature = [r for r in longs if not r["too_new"]]
+    months = Counter((r["published"][:7], "short" if r["is_short"] else "uzun") for r in rows)
+    recent_months = sorted({m for m, _ in months}, reverse=True)[:12]
+    L = [f"# {crow['channel']}", "",
+         f"- Link: {crow['url']}  (handle: {crow['handle']})",
+         f"- Sinif / bucket: **{crow['class'] or '-'}** / **{crow['bucket']}**   |   Not: {crow['note'] or '-'}",
+         f"- Bayraklar: {crow['flags'] or '-'}",
+         f"- Avatar: {crow['avatar_url']}", f"- Banner: {crow['banner_url'] or '-'}", "", "## Temel sayilar", ""]
+    groups = [
+        ("Zaman", ("created", "first_video", "created_to_first_video_days", "last_video", "last_long_video", "days_since_last_long")),
+        ("Buyukluk", ("subs", "subs_hidden", "total_views", "total_videos_api", "videos_collected", "long_total", "short_total")),
+        ("Ritim", ("long_12m", "short_12m", "long_per_week_12m", "long_per_week_90d", "active_weeks_of_last_12")),
+        ("Performans (uzun)", ("median_views_long", "median_views_long_12m", "mean_views_long", "median_views_per_sub_long",
+                               "median_engagement_long", "median_likes_long", "median_comments_long", "median_duration_min_long",
+                               "max_outlier_ratio_long", "share_outliers_2x_long", "top1_share_of_long_views", "views_last_90d")),
+        ("Shorts", ("short_share_of_videos", "short_share_of_views", "median_views_short")),
+        ("Diger", ("country", "default_language", "video_languages", "comments_disabled_share", "avg_tag_count", "playlist_count", "topics", "made_for_kids")),
+    ]
+    for title, keys in groups:
+        L += [f"**{title}**", ""] + [f"- {k}: {crow[k]}" for k in keys] + [""]
+    L += ["## Aciklama", "", raw["channel"]["snippet"].get("description", "").strip() or "-", "",
+          "## Anahtar kelimeler", "", ch.get("brandingSettings", {}).get("channel", {}).get("keywords", "-"), "",
+          "## Oynatma listeleri (seri yapisi)", ""]
+    pls = sorted(raw.get("playlists", []), key=lambda p: p["contentDetails"].get("itemCount", 0), reverse=True)
+    L += [f"- {p['snippet']['title']} ({p['contentDetails'].get('itemCount', 0)} video)" for p in pls] or ["-"]
+    sec = [f"{s['snippet'].get('type', '?')}: {s['snippet'].get('title', '')}".strip(": ") for s in raw.get("sections", [])]
+    L += ["", "## Ana sayfa bolumleri", ""] + [f"- {x}" for x in sec] if sec else []
+    L += ["", "## Aylik yukleme (son 12 ay)", "", "| ay | uzun | short |", "|---|---|---|"]
+    L += [f"| {m} | {months.get((m, 'uzun'), 0)} | {months.get((m, 'short'), 0)} |" for m in recent_months]
+    L += ["", "## En cok izlenen 10 uzun video", ""] + [vline(r) for r in sorted(longs, key=lambda r: r["views"], reverse=True)[:10]]
+    L += ["", "## En son 10 video", ""] + [vline(r) for r in sorted(rows, key=lambda r: r["age_days"])[:10]]
+    L += ["", "## En dusuk 5 uzun video (olgun)", ""] + [vline(r) for r in sorted(mature, key=lambda r: r["views"])[:5]]
+    return "\n".join(L) + "\n"
+
+
+def write_channel_files(crow, rows, raw):
+    d = OUT / "channels" / crow["bucket"] / f"{safe(crow['channel'])}_{crow['channel_id'][-6:]}"
+    d.mkdir(parents=True, exist_ok=True)
+    write_csv(d / "videos.csv", sorted(rows, key=lambda r: r["published"], reverse=True))
+    (d / "profile.md").write_text(profile_md(crow, rows, raw), encoding="utf-8")
+
+
 # ------------------------------------------------------------------ ana ----
-def build():
+def build(write_files=False):
     chans, vids, briefs = [], [], []
+    cat_file = RAW.parent / "video_categories.json"
+    if cat_file.exists():
+        CATS.update({c["id"]: c["snippet"]["title"] for c in json.loads(cat_file.read_text(encoding="utf-8"))})
     for p in sorted(RAW.glob("*.json")):
         raw = json.loads(p.read_text(encoding="utf-8"))
         now = parse_ts(raw["meta"]["collected_at"])
@@ -256,6 +321,8 @@ def build():
         crow = channel_row(raw, rows, meds, now)
         for r in rows:
             r.update(channel=crow["channel"], channel_id=crow["channel_id"], bucket=crow["bucket"])
+        if write_files:
+            write_channel_files(crow, rows, raw)
         chans.append(crow)
         vids.extend(rows)
         briefs.append(brief(crow, rows))
@@ -298,7 +365,7 @@ def order_key(b):
 
 def main():
     OUT.mkdir(exist_ok=True)
-    chans, vids, briefs = build()
+    chans, vids, briefs = build(write_files=True)
     if not chans:
         raise SystemExit("data/raw/ bos. Once collect.py calistir.")
     write_csv(OUT / "channels_full.csv", chans)

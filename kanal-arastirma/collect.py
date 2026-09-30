@@ -26,7 +26,7 @@ from pathlib import Path
 API = "https://www.googleapis.com/youtube/v3"
 RAW = Path("data/raw")
 
-CHANNEL_PARTS = "snippet,statistics,contentDetails,brandingSettings,topicDetails,status"
+CHANNEL_PARTS = "snippet,statistics,contentDetails,brandingSettings,topicDetails,status,localizations"
 VIDEO_PARTS = ("snippet,contentDetails,statistics,status,topicDetails,"
                "liveStreamingDetails,recordingDetails,paidProductPlacementDetails")
 VIDEO_PARTS_SAFE = "snippet,contentDetails,statistics,status,topicDetails,liveStreamingDetails"
@@ -117,6 +117,13 @@ def main():
     lines = [l for l in src.read_text(encoding="utf-8").splitlines()
              if l.strip() and not l.lstrip().startswith("#")]
     RAW.mkdir(parents=True, exist_ok=True)
+    cats = RAW.parent / "video_categories.json"
+    if not cats.exists():  # kategori id -> ad eslemesi (bir kez)
+        try:
+            cats.write_text(json.dumps(api("videoCategories", part="snippet", regionCode="JP").get("items", []),
+                                       ensure_ascii=False), encoding="utf-8")
+        except RuntimeError as e:
+            print("Uyari: video kategorileri alinamadi:", e)
 
     seen, failed = set(), []
     for n, line in enumerate(lines, 1):
@@ -135,10 +142,14 @@ def main():
             videos = fetch_videos(ch["contentDetails"]["relatedPlaylists"]["uploads"])
             playlists = list(paged("playlists", max_pages=5, part="snippet,contentDetails",
                                    channelId=cid, maxResults=50))
+            try:  # kanal ana sayfa bolumleri (one cikan listeler/kanallar)
+                sections = api("channelSections", part="snippet,contentDetails", channelId=cid).get("items", [])
+            except RuntimeError:
+                sections = []
             path.write_text(json.dumps({
                 "meta": {"ref": ref, "class": cls, "note": note,
                          "collected_at": datetime.now(timezone.utc).isoformat()},
-                "channel": ch, "playlists": playlists, "videos": videos,
+                "channel": ch, "playlists": playlists, "sections": sections, "videos": videos,
             }, ensure_ascii=False), encoding="utf-8")
             print(f"[{n}/{len(lines)}] {ch['snippet']['title']}: {len(videos)} video, {len(playlists)} oynatma listesi")
         except Exception as e:  # tek kanal hatasi tumunu durdurmasin
